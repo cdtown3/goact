@@ -5,6 +5,8 @@
 This is a base repo for using React client-side rendering and a Go backend,
 using Clerk.com as the authentication service
 
+Ensure Docker, Go, pnpm, make are installed on machine. Also, before running client, pnpm install first.
+
 ## Features
 
 - Websocket Messages
@@ -43,6 +45,10 @@ make dev-server # go run .
 ```
 
 ### Client
+Before first build
+```sh
+make setup-client # cd client && pnpm i
+```
 
 ```sh
 make dev-client # cd client && pnpm dev

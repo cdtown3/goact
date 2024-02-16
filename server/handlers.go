@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"mck-p/goact/authorization"
 	"mck-p/goact/commands"
 	"mck-p/goact/data"
 	"mck-p/goact/tracer"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
-	"github.com/google/uuid"
 )
 
 type Handler struct{}
@@ -87,6 +87,10 @@ type GetMessageRequest struct{}
 
 type GetMessageResponse struct {
 	Messages []any `json:"messages"`
+}
+
+type GetGroupsResponse struct {
+	Groups []any `json:"groups"`
 }
 
 // GetMessages	godoc
@@ -181,6 +185,45 @@ func (handlers *Handler) GetUserByExternalId(c *fiber.Ctx) error {
 	return JSONAPI(c, 200, user)
 }
 
+// GetUserById	godoc
+//
+//	@Id			GetUserById
+//	@Summary	Returns the Goact User based on their internal ID
+//	@Tags		Users
+//	@Produce	application/vnd.api+json
+//	@Security	BearerToken
+//	@Success	200	{object}	SuccessResponse[data.User]
+//	@Failure	500	{object}	ErrorResponse[GenericError]
+//	@Router		/api/v1/users/{id} [get]
+func (handlers *Handler) GetUserById(c *fiber.Ctx) error {
+	_, span := tracer.Tracer.Start(c.UserContext(), "Handler::GetUserById")
+	defer span.End()
+	user := c.Locals("user").(*data.User)
+
+	id := c.Params("id")
+	canGetUserById := authorization.CanPerformAction(
+		user.Id,
+		fmt.Sprintf("user::%s", id),
+		"view",
+	)
+
+	if !canGetUserById {
+		return JSONAPI(c, 401, fiber.Map{
+			"message": "You are not authorized to perform that action",
+		})
+	}
+
+	user, err := data.Users.GetById(id)
+
+	if err != nil {
+		slog.Warn("Error trying to get user by ID", slog.Any("error", err), slog.String("id", id))
+
+		return err
+	}
+
+	return JSONAPI(c, 200, user)
+}
+
 // @Id WebhookIngestion
 // @Summary Handle Webhook
 // @Description Handles incoming webhooks
@@ -238,6 +281,227 @@ func (handlers *Handler) Webhook(c *fiber.Ctx) error {
 	})
 }
 
+// GetGroupMessages	godoc
+//
+//		@Id			GetGroupMessages
+//		@Summary	Retrieves the last N number of messages, given some offset
+//		@Tags		Users
+//		@Produce	application/vnd.api+json
+//	 	@Param		id path string true "Group ID"
+//		@Param		limit query int false "Limit for pagination"
+//		@Param		offset query int false "Offset for pagination"
+//		@Param		orderBy query int false "DESC or ASC"
+
+// @Success	200	{object}	SuccessResponse[GetMessageResponse]
+// @Failure	500	{object}	ErrorResponse[GenericError]
+// @Router		/api/v1/messages/groups/{:id} [get]
+func (handlers *Handler) GetGroupMessages(c *fiber.Ctx) error {
+	_, span := tracer.Tracer.Start(c.UserContext(), "Handler::GetGroupMessages")
+	defer span.End()
+	groupId := c.Params("id")
+	user := c.Locals("user").(*data.User)
+
+	canGetGroupMessages := authorization.CanPerformAction(
+		user.Id,
+		fmt.Sprintf("group::%s", groupId),
+		"getMembers",
+	)
+
+	if !canGetGroupMessages {
+		return JSONAPI(c, 401, fiber.Map{
+			"message": "Not authorized to perform this action",
+		})
+	}
+
+	limit := c.QueryInt("limit")
+
+	if limit == 0 {
+		limit = 100
+	}
+
+	offset := c.QueryInt("offset")
+
+	orderBy := c.Query("orderBy")
+
+	if orderBy == "" {
+		orderBy = "DESC"
+	}
+
+	messages, err := data.Messages.GetMessagesForGroup(data.MessageGroupQuery{
+		GroupId: groupId,
+		Offset:  offset,
+		Limit:   limit,
+		OrderBy: orderBy,
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return JSONAPI(c, 200, messages)
+}
+
+// GetUserMessageGroups	godoc
+//
+//	@Id			GetUserMessageGroups
+//	@Summary	Retrieves the Message Groups that a User has access to
+//	@Tags		Messages
+//	@Produce	application/vnd.api+json
+//
+// @Success	200	{object}	SuccessResponse[GetGroupsResponse]
+// @Failure	500	{object}	ErrorResponse[GenericError]
+// @Router		/api/v1/messages/groups [get]
+func (handlers *Handler) GetGroups(c *fiber.Ctx) error {
+	_, span := tracer.Tracer.Start(c.UserContext(), "Handler::GetGroups")
+	defer span.End()
+	user := c.Locals("user").(*data.User)
+
+	groups, err := data.Messages.GetUserGroups(data.UserGroupsQuery{
+		UserId: user.Id,
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return JSONAPI(c, 200, groups)
+}
+
+// GetUserCommunities	godoc
+//
+//	@Id			GetUserCommunities
+//	@Summary	Retrieves the Communities that a User has access to
+//	@Tags		Communities
+//	@Produce	application/vnd.api+json
+//
+// @Success	200	{object}	SuccessResponse[GetGroupsResponse]
+// @Failure	500	{object}	ErrorResponse[GenericError]
+// @Router		/api/v1/messages/groups [get]
+func (handlers *Handler) GetCommunities(c *fiber.Ctx) error {
+	_, span := tracer.Tracer.Start(c.UserContext(), "Handler::GetCommunities")
+	defer span.End()
+	user := c.Locals("user").(*data.User)
+
+	communities, err := data.Communities.GetUserCommunities(data.UserCommunitiesQuery{
+		UserId: user.Id,
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return JSONAPI(c, 200, communities)
+}
+
+// GetUserCommunityById	godoc
+//
+//	@Id			GetUserCommunityById
+//	@Summary	Retrieves the Community of a given ID
+//	@Tags		Communities
+//	@Produce	application/vnd.api+json
+//
+// @Success	200	{object}	SuccessResponse[data.Community]
+// @Failure	500	{object}	ErrorResponse[GenericError]
+// @Router		/api/v1/messages/groups [get]
+func (handlers *Handler) GetCommunityById(c *fiber.Ctx) error {
+	_, span := tracer.Tracer.Start(c.UserContext(), "Handler::GetCommunitiy")
+	defer span.End()
+
+	community, err := data.Communities.GetCommunityById(data.ComminityByIdQuery{
+		Id: c.Params("id"),
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return JSONAPI(c, 200, community)
+}
+
+type MessageGroupRequest struct {
+	Name string `json:"name"`
+}
+
+// @Id CreateMessageGroup
+// @Summary Creates a new Message Group
+// @Description This will create a new Message Group and assign the creator as the only authorized user of that message group
+// @Tags Messages
+// @Accept json
+//
+//	@Produce	application/vnd.api+json
+//
+// @Param requestBody body MessageGroupRequest true "Message Group Information"
+//
+// @Success 200 {object} SuccessResponse[data.MessageGroup]
+// @Router /api/v1/messages/groups [post]
+func (handlers *Handler) CreateMessageGroup(c *fiber.Ctx) error {
+	_, span := tracer.Tracer.Start(c.UserContext(), "Handler::CreateMessageGroup")
+	defer span.End()
+
+	user := c.Locals("user").(*data.User)
+
+	payload := MessageGroupRequest{}
+	err := c.BodyParser(&payload)
+
+	if err != nil {
+		return err
+	}
+
+	result, err := data.Messages.CreateGroup(data.CreateGroupCmd{
+		UserId:    user.Id,
+		GroupName: payload.Name,
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return JSONAPI(c, 201, result)
+}
+
+type CreateCommunityRequest struct {
+	Name     string `json:"name"`
+	IsPublic bool   `json:"is_public"`
+}
+
+// @Id CreateCommunity
+// @Summary Creates a new Community
+// @Description This will create a new Community and assign the creator as the only memberof that community
+// @Tags Communities
+// @Accept json
+//
+//	@Produce	application/vnd.api+json
+//
+// @Param requestBody body CreateCommunityRequest true "New Community Information"
+//
+// @Success 200 {object} SuccessResponse[data.Community]
+// @Router /api/v1/communities [post]
+func (handlers *Handler) CreateCommunity(c *fiber.Ctx) error {
+	_, span := tracer.Tracer.Start(c.UserContext(), "Handler::CreateCommunity")
+	defer span.End()
+
+	user := c.Locals("user").(*data.User)
+
+	payload := CreateCommunityRequest{}
+	err := c.BodyParser(&payload)
+
+	if err != nil {
+		return err
+	}
+
+	result, err := data.Communities.CreateCommunity(data.NewCommunity{
+		Name:      payload.Name,
+		IsPublic:  payload.IsPublic,
+		CreatorId: user.Id,
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return JSONAPI(c, 201, result)
+}
+
 type WebsocketMessage struct {
 	Id       string            `json:"id"`
 	Action   string            `json:"action"`
@@ -261,6 +525,7 @@ func handleMessage(msg []byte, c *websocket.Conn, user *data.User, dispatch func
 		Action:   incomingMessage.Action,
 		Payload:  incomingMessage.Payload,
 		Metadata: incomingMessage.Metadata,
+		Id:       incomingMessage.Id,
 		Dispatch: dispatch,
 	}
 
@@ -304,7 +569,7 @@ func (handlers *Handler) WebsocketHandler(c *websocket.Conn) {
 			return nil
 		}
 
-		slog.Debug("Sending new message", slog.Any("action", cmd.Action), slog.Any("receiverId", user.Id), slog.String("actorId", cmd.ActorId))
+		slog.Debug("Sending new message", slog.Any("action", cmd.Action), slog.Any("receiverId", user.Id), slog.String("actorId", cmd.ActorId), slog.String("id", cmd.Id))
 
 		cmd.Metadata["actorId"] = cmd.ActorId
 
@@ -312,7 +577,7 @@ func (handlers *Handler) WebsocketHandler(c *websocket.Conn) {
 			Action:   fmt.Sprintf("@@SERVER-SENT/%s", cmd.Action),
 			Payload:  cmd.Payload,
 			Metadata: cmd.Metadata,
-			Id:       uuid.NewString(),
+			Id:       cmd.Id,
 		}
 
 		if err = conn.WriteJSON(outgoingMsg); err != nil {
@@ -326,6 +591,7 @@ func (handlers *Handler) WebsocketHandler(c *websocket.Conn) {
 
 	go func(conn *websocket.Conn) {
 		for msg := range messagesForUserChannel {
+			slog.Debug("We got a message for the user on the websocket", slog.String("id", msg.Id))
 			select {
 			case <-quit:
 				slog.Debug("We have been asked to quit the messaging for user channel")
@@ -336,6 +602,7 @@ func (handlers *Handler) WebsocketHandler(c *websocket.Conn) {
 					Payload:  msg.Payload,
 					Action:   msg.Action,
 					Metadata: msg.Metadata,
+					Id:       msg.Id,
 				}, conn)
 
 				if err != nil {
